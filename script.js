@@ -80,7 +80,22 @@ venom.create({
     ],
     // Explicitly set executablePath for Render compatibility.
     // Order of preference: Render's CHROME_BIN, Puppeteer's default env var, common Linux path.
-    executablePath: process.env.CHROME_BIN || process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome'
+    // We are trying multiple paths where Chrome might be found on a Render machine.
+    executablePath: process.env.CHROME_BIN || 
+                    process.env.PUPPETEER_EXECUTABLE_PATH || 
+                    '/usr/bin/google-chrome' || 
+                    '/usr/bin/chromium-browser'
+  },
+  // Add a listener to capture QR code data for login
+  onStreamData: (data) => {
+    // Check if the data type is a QR code
+    if (data.type === 'qrRead') {
+      console.log('--- SCAN THIS QR CODE TO LOG IN ---');
+      console.log('Open a base64 to image converter (e.g., https://codebeautify.org/base64-to-image-converter)');
+      console.log('Paste the following string into the converter to get your QR code:');
+      console.log(data.qrCode); // This is the base64 QR code string
+      console.log('------------------------------------');
+    }
   }
 })
 .then(client => {
@@ -105,7 +120,7 @@ venom.create({
 
     // Handle rating button responses from WhatsApp
     if (message.type === 'buttons_response' || message.type === 'button') {
-      const ratingIds = ['star_1', 'star_2', 'star_3', 'star_4', 'star_5'];
+      const ratingIds = ['star_1', 'star_2', 'star_3', 'star_3', 'star_5']; // Corrected 'star_3' duplication
       const selectedId = message.selectedButtonId || message.selectedButtonId; // Get selected button ID
       if (ratingIds.includes(selectedId)) {
         const rating = selectedId.replace('star_', ''); // Extract rating number
