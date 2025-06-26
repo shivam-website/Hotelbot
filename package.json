@@ -7,10 +7,9 @@
     "start": "node script.js"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": "18.x"
   },
   "dependencies": {
-    "@google/genai": "^1.5.1",
     "@google/generative-ai": "^0.24.1",
     "axios": "^1.10.0",
     "cors": "^2.8.5",
