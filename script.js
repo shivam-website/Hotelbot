@@ -104,9 +104,9 @@ venom.create({
   setClient(client);
 
   // Start the Express server for the admin dashboard
-  app.listen(3000, () => {
-    console.log('🌐 Dashboard running at http://localhost:3000/admin.html');
-  });
+ app.listen(PORT, () => { // Changed 3000 to PORT
+  console.log(`🌐 Dashboard running at http://localhost:${PORT}/admin.html`);
+});
 
   // Listen for incoming WhatsApp messages
   client.onMessage(async (message) => {
