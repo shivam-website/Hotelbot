@@ -59,7 +59,7 @@ const userStates = new Map();
 // Create Venom-bot instance
 venom.create({
   session: 'hotel-bot',
-  headless: true, // Run browser in headless mode (no UI)
+  headless: 'new', // Changed from 'true' to 'new' to fix deprecation warning
   useChrome: false, // Prevents Venom from trying to download its own Chrome
   sessionFolder: './tokens', // Folder to store WhatsApp session tokens
   multidevice: true, // Enable multi-device support
@@ -79,7 +79,7 @@ venom.create({
       '--enable-features=NetworkService,NetworkServiceInProcess' // Improve network stability
     ],
     // Explicitly set executablePath for Render compatibility.
-    // Render typically provides Chrome at /usr/bin/google-chrome, or via CHROME_BIN/PUPPETEER_EXECUTABLE_PATH env vars.
+    // Order of preference: Render's CHROME_BIN, Puppeteer's default env var, common Linux path.
     executablePath: process.env.CHROME_BIN || process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome'
   }
 })
