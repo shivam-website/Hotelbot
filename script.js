@@ -81,10 +81,8 @@ venom.create({
     // Explicitly set executablePath for Render compatibility.
     // Order of preference: Render's CHROME_BIN, Puppeteer's default env var, common Linux path.
     // We are trying multiple paths where Chrome might be found on a Render machine.
-    executablePath: process.env.CHROME_BIN || 
-                    process.env.PUPPETEER_EXECUTABLE_PATH || 
-                    '/usr/bin/google-chrome' || 
-                    '/usr/bin/chromium-browser'
+    executablePath: require('playwright').chromium.executablePath()
+
   },
   // Add a listener to capture QR code data for login
   onStreamData: (data) => {
