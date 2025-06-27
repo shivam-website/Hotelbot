@@ -8,7 +8,7 @@
     "postinstall": "playwright install chromium"
   },
   "engines": {
-    "node": "20.x"
+    "node": "20.13.0"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
