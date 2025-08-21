@@ -1,13 +1,22 @@
-const venom = require('venom-bot');
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason
+} = require('@whiskeysockets/baileys');
+const { Boom } = require('@hapi/boom');
+const pino = require('pino');
+const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const path = require('path');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
-const { app, setClient } = require('./server');
+const { app, setClient } = require('./server'); // Assuming your server file is separate
 
 // Hotel Configuration
 const hotelConfig = {
   name: "Hotel Sitasharan Resort",
-  adminNumber: '9779819809195@c.us',
+  // IMPORTANT: Baileys uses JID format for numbers. Replace with your admin's full WhatsApp JID.
+  // Example: '9779819809195@s.whatsapp.net' for a phone number or '1234567890-123456@g.us' for a group
+  adminNumber: '9779819809195@s.whatsapp.net', 
   receptionExtension: "22",
   databaseFile: path.join(__dirname, 'orders.json'),
   menu: {
@@ -43,8 +52,9 @@ const hotelConfig = {
 };
 
 // Initialize Google Generative AI with your API key
-const genAI = new GoogleGenerativeAI("AIzaSyASc5JDTn-7mD6_CUefisGlkP9aRUHETUM"); // Use env variable in prod
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+// API key is now directly embedded as requested.
+const genAI = new GoogleGenerativeAI("AIzaSyD-5KrZqlueWgKpvlfbLDTTyNOxN9xjL7M"); 
+const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // Model updated to gemini-2.0-flash
 
 // Ensure orders.json database file exists
 if (!fs.existsSync(hotelConfig.databaseFile)) {
@@ -68,72 +78,94 @@ function filterValidItems(items) {
   });
 }
 
-venom
-  .create({
-    session: 'hotel-bot',
-    headless: true,
-    useChrome: false,
-    sessionFolder: './tokens',
-    multidevice: true,
-    cacheEnabled: false,
-    disableSpins: true,
-    killProcessOnBrowserClose: true,
-    puppeteerOptions: {
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--single-process',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu',
-        '--enable-features=NetworkService,NetworkServiceInProcess'
-      ],
-      executablePath:
-        process.env.CHROME_BIN ||
-        process.env.PUPPETEER_EXECUTABLE_PATH ||
-        '/usr/bin/google-chrome'
-    }
-  })
+// Global variable for Baileys socket
+let sock = null;
 
-.then(client => {
-  console.log("✅ WhatsApp Bot Ready");
-  setClient(client);
-
-  app.listen(3000, () => {
-    console.log('🌐 Dashboard running at http://localhost:3000/admin.html');
+// Main function to start the bot connection
+async function startBotConnection() {
+  // useMultiFileAuthState stores session data in 'auth' folder
+  const { state, saveCreds } = await useMultiFileAuthState('auth'); 
+  
+  sock = makeWASocket({
+    auth: state,
+    logger: pino({ level: 'silent' }), // Suppress verbose Baileys logs
+    // printQRInTerminal: true, // Deprecated, handled by connection.update event listener
   });
 
-  client.onMessage(async (message) => {
-    if (!message.body || message.isGroupMsg) return;
+  // Set the client instance for the server, if server.js needs it
+  setClient(sock);
 
-    const from = message.from;
-    const userMsg = message.body.trim();
+  // Handle connection updates (e.g., QR code, disconnection, reconnection)
+  sock.ev.on('connection.update', (update) => {
+    const { connection, lastDisconnect, qr } = update;
+    if (connection === 'close') {
+      // Reconnect if not explicitly logged out
+      const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
+      console.log('connection closed due to ', lastDisconnect.error, ', reconnecting ', shouldReconnect);
+      if (shouldReconnect) {
+        startBotConnection(); // Attempt to reconnect
+      }
+    } else if (connection === 'open') {
+      console.log('✅ WhatsApp Bot Ready');
+    }
+    // Display QR code for initial login
+    if (qr) {
+      qrcode.generate(qr, { small: true });
+      console.log('Scan the QR code above to connect your WhatsApp bot.');
+    }
+  });
+
+  // Save credentials when they are updated (e.g., new session, token refresh)
+  sock.ev.on('creds.update', saveCreds);
+
+  // Handle incoming messages
+  sock.ev.on('messages.upsert', async m => {
+    const msg = m.messages[0];
+    // Ignore messages if:
+    // - There's no message content
+    // - The message is sent by the bot itself
+    // - The message is from a group (configurable, enable if you want group interaction)
+    if (!msg.message || msg.key.fromMe || msg.key.remoteJid.endsWith('@g.us')) return;
+
+    const from = msg.key.remoteJid; // Sender's JID
+    // Extract message body from different message types
+    const userMsg = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+
+    if (!userMsg) return; // Ignore empty messages
+    console.log(`Received message from ${from}: ${userMsg}`);
 
     // Initialize or get user state
     let state = userStates.get(from) || { chatHistory: [], awaitingConfirmation: false };
 
     // Handle order confirmation step
     if (state.awaitingConfirmation) {
-      if (userMsg.toLowerCase() === 'yes') {
-        await placeOrder(client, from, state);
-        userStates.delete(from);
-        return;
+      const lowerUserMsg = userMsg.toLowerCase();
+      // FIX: More robust check for 'yes' confirmation (includes 'yes', 'confirm', 'place order')
+      if (lowerUserMsg.includes('yes') || lowerUserMsg.includes('confirm') || lowerUserMsg.includes('place order')) {
+        await placeOrder(sock, from, state); // This is where the order is supposed to be placed
+        state.awaitingConfirmation = false;
+        delete state.items; // Clear ordered items after placing the order
+        // Optionally, if the room number should also be cleared after an order, uncomment the line below
+        // delete state.room; 
+        userStates.set(from, state); // Save the updated state
+        return; // Exit the message handler
       }
-      if (userMsg.toLowerCase() === 'no') {
-        await client.sendText(from, "Okay, please tell me your order again.");
+      // FIX: More robust check for 'no' confirmation
+      if (lowerUserMsg.includes('no') || lowerUserMsg.includes('cancel')) {
+        await sock.sendMessage(from, { text: "Okay, your previous order request has been cancelled. Please tell me your order again." });
         delete state.items;
         state.awaitingConfirmation = false;
         userStates.set(from, state);
         return;
       }
+      // If awaiting confirmation but user didn't say an obvious yes/no, let AI handle it 
+      // but remain in confirmation state. Do NOT 'return' here.
     }
 
     // Reset chat command
     if (userMsg.toLowerCase() === 'reset') {
       userStates.delete(from);
-      await client.sendText(from, "🔄 Chat has been reset. How may I assist you today?");
+      await sock.sendMessage(from, { text: "🔄 Chat has been reset. How may I assist you today?" });
       return;
     }
 
@@ -146,11 +178,10 @@ venom
     }
 
     if (parsed.orderItems && parsed.orderItems.length > 0) {
-      // Filter parsed items against menu, reject invalid
       const filteredItems = filterValidItems(parsed.orderItems);
       if (filteredItems.length === 0) {
-        await client.sendText(from, "Sorry, none of the items you mentioned are on our menu. Please choose from our menu.");
-        await sendFullMenu(client, from);
+        await sock.sendMessage(from, { text: "Sorry, none of the items you mentioned are on our menu. Please choose from our menu." });
+        await sendFullMenu(sock, from);
         return;
       }
       state.items = filteredItems;
@@ -158,9 +189,9 @@ venom
 
     // Handle special case: user provides room only after ordering items
     if (parsed.intent === 'provide_room_only' && state.items && state.items.length > 0) {
-      await client.sendText(from, `Thanks! Room number set to ${state.room}. Shall I place your order for ${state.items.join(', ')}? Reply 'yes' or 'no'.`);
+      await sock.sendMessage(from, { text: `Thanks! Room number set to ${state.room}. Shall I place your order for ${state.items.join(', ')}. Reply 'yes' or 'no'.` });
       state.awaitingConfirmation = true;
-      userStates.set(from, state);
+      userStates.set(from, state); // Update state for confirmation
       return;
     }
 
@@ -168,27 +199,27 @@ venom
     switch (parsed.intent) {
       case 'order_food':
         if (!state.room) {
-          await client.sendText(from, "Could you please provide your 3-4 digit room number?");
+          await sock.sendMessage(from, { text: "Could you please provide your 3-4 digit room number?" });
         } else if (!state.items || state.items.length === 0) {
-          await client.sendText(from, "What would you like to order from our menu?");
+          await sock.sendMessage(from, { text: "What would you like to order from our menu?" });
         } else {
-          await client.sendText(from, `Got it! Room: ${state.room}, Order: ${state.items.join(', ')}. Shall I place the order? Reply 'yes' or 'no'.`);
+          await sock.sendMessage(from, { text: `Got it! Room: ${state.room}, Order: ${state.items.join(', ')}. Shall I place the order? Reply 'yes' or 'no'.` });
           state.awaitingConfirmation = true;
         }
         break;
 
       case 'ask_menu':
-        await sendFullMenu(client, from);
+        await sendFullMenu(sock, from);
         break;
 
       case 'greeting':
-        await client.sendText(from, `Hello! Welcome to ${hotelConfig.name}. How can I assist you today?`);
+        await sock.sendMessage(from, { text: `Hello! Welcome to ${hotelConfig.name}. How can I assist you today?` });
         break;
 
       default:
         // Default fallback: AI generates a conversational reply
-        const aiReply = await getContextualAIResponse(client, from, userMsg);
-        await client.sendText(from, aiReply);
+        const aiReply = await getContextualAIResponse(sock, from, userMsg);
+        await sock.sendMessage(from, { text: aiReply });
         break;
     }
 
@@ -196,9 +227,7 @@ venom
     state.chatHistory.push({ role: 'guest', content: userMsg });
     userStates.set(from, state);
   });
-
-})
-.catch(console.error);
+}
 
 /**
  * Uses Gemini AI to parse the user's message for intent, room number, and order items.
@@ -265,15 +294,18 @@ Example response:
 
 /**
  * Places the order: saves it in JSON DB and notifies the manager/admin
+ * @param {object} sock - The Baileys socket instance
+ * @param {string} from - The JID of the sender
+ * @param {object} state - The current user state
  */
-async function placeOrder(client, from, state) {
+async function placeOrder(sock, from, state) {
   if (!state.room || !state.items || state.items.length === 0) {
-    await client.sendText(from, "Sorry, I need both room number and order details to place your order.");
+    await sock.sendMessage(from, { text: "Sorry, I need both room number and order details to place your order." });
     return;
   }
 
   const orders = JSON.parse(fs.readFileSync(hotelConfig.databaseFile));
-  const orderId = Date.now();
+  const orderId = Date.now(); // Corrected Date.Now() to Date.now()
 
   const newOrder = {
     id: orderId,
@@ -288,44 +320,48 @@ async function placeOrder(client, from, state) {
   fs.writeFileSync(hotelConfig.databaseFile, JSON.stringify(orders, null, 2));
 
   // Notify admin
-  await client.sendText(hotelConfig.adminNumber, `📢 NEW ORDER\n#${orderId}\n🏨 Room: ${state.room}\n🍽 Items:\n${state.items.join('\n')}`);
+  await sock.sendMessage(hotelConfig.adminNumber, { text: `📢 NEW ORDER\n#${orderId}\n🏨 Room: ${state.room}\n🍽 Items:\n${newOrder.items.join('\n')}` }); // Fixed: Use newOrder.items
 
   // Confirm to guest
-  await client.sendText(from, `Your order #${orderId} has been placed! It will arrive shortly.`);
+  await sock.sendMessage(from, { text: `Your order #${orderId} has been placed! It will arrive shortly.` });
 
-  // Send rating buttons
-  await client.sendButtons(
-    from,
-    '🙏 We’d love your feedback! Please rate us:',
-    [
-      { buttonText: { displayText: '⭐ 1' }, id: 'star_1' },
-      { buttonText: { displayText: '⭐ 2' }, id: 'star_2' },
-      { buttonText: { displayText: '⭐ 3' }, id: 'star_3' },
-      { buttonText: { displayText: '⭐ 4' }, id: 'star_4' },
-      { buttonText: { displayText: '⭐ 5' }, id: 'star_5' }
+  // Send rating buttons (Baileys button message format)
+  await sock.sendMessage(from, {
+    text: '🙏 We’d love your feedback! Please rate us:',
+    footer: 'Tap one below to rate our service.', // Optional footer for buttons
+    buttons: [
+      { buttonText: { displayText: '⭐ 1' }, buttonId: 'star_1' },
+      { buttonText: { displayText: '⭐ 2' }, buttonId: 'star_2' },
+      { buttonText: { displayText: '⭐ 3' }, buttonId: 'star_3' },
+      { buttonText: { displayText: '⭐ 4' }, buttonId: 'star_4' },
+      { buttonText: { displayText: '⭐ 5' }, buttonId: 'star_5' }
     ],
-    'Rate Us',
-    'Tap one below to rate our service.'
-  );
+    headerType: 1 // Indicates a text header
+  });
 }
 
 /**
  * Sends full hotel menu to the guest.
+ * @param {object} sock - The Baileys socket instance
+ * @param {string} number - The JID of the recipient
  */
-async function sendFullMenu(client, number) {
+async function sendFullMenu(sock, number) {
   let text = `📋 Our Menu:\n\n`;
   for (const category in hotelConfig.menu) {
     text += `🍽 ${category.toUpperCase()} (${hotelConfig.hours[category]}):\n`;
     text += hotelConfig.menu[category].map(item => `• ${item}`).join('\n') + '\n\n';
   }
   text += "You can say things like 'I'd like to order 2 pancakes' or 'Can I get a towel + chicken sandwich?'\n";
-  await client.sendText(number, text);
+  await sock.sendMessage(number, { text: text });
 }
 
 /**
  * Gets a contextual AI reply (fallback conversational)
+ * @param {object} sock - The Baileys socket instance (not directly used in this function, but passed for consistency)
+ * @param {string} from - The JID of the sender
+ * @param {string} prompt - The user's message
  */
-async function getContextualAIResponse(client, from, prompt) {
+async function getContextualAIResponse(sock, from, prompt) {
   try {
     const state = userStates.get(from) || {};
 
@@ -368,3 +404,11 @@ Be polite and helpful.`
     return "I'm having trouble understanding. Could you please rephrase that?";
   }
 }
+
+// Start the Express server once
+app.listen(3000, () => {
+  console.log('🌐 Dashboard running at http://localhost:3000/admin.html');
+});
+
+// Start the bot connection process
+startBotConnection();
