@@ -4,21 +4,23 @@ const fs = require('fs');
 const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 5000; // Use Render's PORT env var, or default to 5000
+// The PORT here is for documentation. The actual listening port is set in index.js.
+const PORT = 3000; 
 const DB_FILE = path.join(__dirname, 'orders.json');
 
 app.use(cors());
 app.use(express.json());
+// Serve static files from the 'public' directory (e.g., admin.html)
 app.use(express.static(path.join(__dirname, 'public')));
 
-let venomClient = null;
+let baileysClient = null; // Renamed from venomClient for clarity
 
 /**
- * Set venom client instance for WhatsApp notifications
- * @param {*} client - venom client instance
+ * Set the Baileys client instance for WhatsApp notifications
+ * @param {object} client - Baileys socket client instance
  */
 function setClient(client) {
-  venomClient = client;
+  baileysClient = client;
 }
 
 /**
@@ -46,7 +48,7 @@ function saveOrders(orders) {
   fs.writeFileSync(DB_FILE, JSON.stringify(orders, null, 2), 'utf-8');
 }
 
-// Create new order
+// API Endpoint: Create a new order (Typically called by the dashboard, not the bot itself)
 app.post('/api/orders', async (req, res) => {
   const { room, items, guestNumber } = req.body;
 
@@ -58,43 +60,42 @@ app.post('/api/orders', async (req, res) => {
   }
 
   const newOrder = {
-    id: Date.now(),
+    id: Date.now(),    // timestamp-based ID
     room: room.trim(),
     items: items.map(i => i.trim()),
+    // Ensure guestNumber is in Baileys JID format (e.g., '1234567890@s.whatsapp.net')
     guestNumber: typeof guestNumber === 'string' && guestNumber.trim() ? guestNumber.trim() : null,
     status: 'Pending',
-    timestamp: Date.now(),
+    timestamp: new Date().toISOString(),
   };
 
   const orders = loadOrders();
   orders.push(newOrder);
   saveOrders(orders);
 
-  // Notify manager/admin on WhatsApp
-  if (venomClient) {
-    const summary = `📢 *NEW ORDER*\n🆔 #${newOrder.id}\n🏨 Room: ${newOrder.room}\n🍽 Items:\n${newOrder.items.join('\n')}`;
+  // Notify manager/admin on WhatsApp using the Baileys client
+  if (baileysClient) {
+    const adminJid = '9779819809195@s.whatsapp.net'; // Admin number in Baileys JID format
+    const summary = `� *NEW ORDER*\n🆔 #${newOrder.id}\n🏨 Room: ${newOrder.room}\n🍽 Items:\n${newOrder.items.join('\n')}`;
     try {
-      await venomClient.sendText('9779819809195@c.us', summary); // admin number
+      // Use baileysClient.sendMessage
+      await baileysClient.sendMessage(adminJid, { text: summary }); 
       console.log(`📤 Notified manager of new order #${newOrder.id}`);
     } catch (err) {
-      console.error('⚠️ Failed to notify manager:', err.message);
+      console.error('⚠️ Failed to notify manager via WhatsApp:', err.message);
     }
   }
 
   res.status(201).json({ success: true, order: newOrder });
 });
 
-// Get all orders
+// API Endpoint: Get all orders
 app.get('/api/orders', (req, res) => {
-  const orders = loadOrders().map(order => {
-    if (!order.timestamp) order.timestamp = Date.now();
-    return order;
-  });
-  saveOrders(orders);
+  const orders = loadOrders();
   res.json(orders);
 });
 
-// Update order status (Pending, Confirmed, Done, Rejected)
+// API Endpoint: Update order status (Pending, Confirmed, Done, Rejected)
 app.post('/api/orders/:id/status', async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const { status } = req.body;
@@ -112,26 +113,28 @@ app.post('/api/orders/:id/status', async (req, res) => {
   saveOrders(orders);
 
   const order = orders[index];
-  const guestNumber = order.guestNumber;
+  const guestNumber = order.guestNumber; // This will already be in JID format from index.js
 
-  if (venomClient && guestNumber && guestNumber.endsWith('@c.us')) {
+  // Notify guest via WhatsApp using the Baileys client if number exists and is valid JID
+  if (baileysClient && guestNumber && guestNumber.endsWith('@s.whatsapp.net')) {
     let msg = '';
     switch (status) {
       case 'Confirmed':
-        msg = `✅ Your order #${id} has been *confirmed* and is now being prepared. Please wait.`;
+        msg = `✅ Your order #${order.id} for ${order.items.join(', ')} has been *confirmed* and is now being prepared. Please wait.`;
         break;
       case 'Done':
-        msg = `✅ Your order #${id} has been *completed*. Thank you for staying with us!`;
+        msg = `✅ Your order #${order.id} for ${order.items.join(', ')} has been *completed*. Thank you for staying with us!`;
         break;
       case 'Rejected':
-        msg = `❌ Your order #${id} was *rejected* by the manager. Please contact reception for help.`;
+        msg = `❌ Your order #${order.id} for ${order.items.join(', ')} was *rejected* by the manager. Please contact reception for help.`;
         break;
       default:
         msg = '';
     }
     if (msg) {
       try {
-        await venomClient.sendText(guestNumber, msg);
+        // Use baileysClient.sendMessage
+        await baileysClient.sendMessage(guestNumber, { text: msg });
         console.log(`📩 WhatsApp update sent to guest ${guestNumber} → ${status}`);
       } catch (err) {
         console.error('⚠️ Failed to notify guest via WhatsApp:', err.message);
@@ -142,7 +145,7 @@ app.post('/api/orders/:id/status', async (req, res) => {
   res.json({ success: true });
 });
 
-// Delete an order
+// API Endpoint: Delete an order
 app.delete('/api/orders/:id', (req, res) => {
   const id = parseInt(req.params.id, 10);
   const orders = loadOrders();
@@ -156,7 +159,7 @@ app.delete('/api/orders/:id', (req, res) => {
   res.json({ success: true, message: `Order ${id} deleted.` });
 });
 
-// Delete all orders with status 'Done'
+// API Endpoint: Delete all orders with status 'Done'
 app.delete('/api/orders/done', (req, res) => {
   let orders = loadOrders();
   const beforeCount = orders.length;
@@ -175,3 +178,6 @@ app.use((err, req, res, next) => {
 
 // Export app and client setter
 module.exports = { app, setClient };
+
+// IMPORTANT: Removed the app.listen() block here.
+// The server should only be started once in index.js.
