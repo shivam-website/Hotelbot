@@ -1,7 +1,3 @@
-// Fix for Render: make crypto global (needed by Baileys)
-const crypto = require('crypto');
-global.crypto = crypto;
-
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -9,7 +5,7 @@ const {
 } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const pino = require('pino');
-const QRCode = require('qrcode');
+const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const path = require('path');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -103,7 +99,9 @@ async function startBotConnection() {
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
     if (connection === 'close') {
-      // Reconnect if not explicitly logged out
+      // Reconnect if not explicitly logged ou
+      // 
+      // t
       const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
       console.log('connection closed due to ', lastDisconnect.error, ', reconnecting ', shouldReconnect);
       if (shouldReconnect) {
@@ -114,13 +112,8 @@ async function startBotConnection() {
     }
     // Display QR code for initial login
     if (qr) {
-      console.log('QR code generated, visit /qr to scan');
-      // Convert QR to Data URL and serve via Express
-      QRCode.toDataURL(qr).then(url => {
-        app.get('/qr', (req, res) => {
-          res.send(`<h3>Scan this QR with your WhatsApp</h3><img src="${url}" />`);
-        });
-      });
+      qrcode.generate(qr, { small: true });
+      console.log('Scan the QR code above to connect your WhatsApp bot.');
     }
   });
 
