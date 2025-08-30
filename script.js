@@ -1,3 +1,7 @@
+// Fix for Render: make crypto global (needed by Baileys)
+const crypto = require('crypto');
+global.crypto = crypto;
+
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -5,7 +9,7 @@ const {
 } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const pino = require('pino');
-const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -13,7 +17,7 @@ const { app, setClient } = require('./server'); // Assuming your server file is 
 
 // Hotel Configuration
 const hotelConfig = {
-  name: "Hotel Sitasharan Resort",
+  name: "Hotel Welcome",
   // IMPORTANT: Baileys uses JID format for numbers. Replace with your admin's full WhatsApp JID.
   // Example: '9779819809195@s.whatsapp.net' for a phone number or '1234567890-123456@g.us' for a group
   adminNumber: '9779819809195@s.whatsapp.net', 
@@ -53,7 +57,7 @@ const hotelConfig = {
 
 // Initialize Google Generative AI with your API key
 // API key is now directly embedded as requested.
-const genAI = new GoogleGenerativeAI("AIzaSyD-5KrZqlueWgKpvlfbLDTTyNOxN9xjL7M"); 
+const genAI = new GoogleGenerativeAI("AIzaSyBEHYqGxJQoQs7y25zS7NHonkvDHazGNSo"); 
 const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // Model updated to gemini-2.0-flash
 
 // Ensure orders.json database file exists
@@ -110,8 +114,13 @@ async function startBotConnection() {
     }
     // Display QR code for initial login
     if (qr) {
-      qrcode.generate(qr, { small: true });
-      console.log('Scan the QR code above to connect your WhatsApp bot.');
+      console.log('QR code generated, visit /qr to scan');
+      // Convert QR to Data URL and serve via Express
+      QRCode.toDataURL(qr).then(url => {
+        app.get('/qr', (req, res) => {
+          res.send(`<h3>Scan this QR with your WhatsApp</h3><img src="${url}" />`);
+        });
+      });
     }
   });
 
